@@ -21,15 +21,22 @@ Required environment variables
 ------------------------------
 AIKIDO_WORKSPACES            JSON list of workspaces, e.g.
                              [{"name": "Mirantis", "client_id": "...", "client_secret": "..."},
-                              {"name": "MOSK", "client_id": "...", "client_secret": "...", "region": "eu"}]
-                             Optional per-workspace keys: "region" (eu|us|me, default eu)
-                             or "base_url" for a custom host.
+                              {"name": "MOSK", "client_id": "...", "client_secret": "...", "team_prefix": ""}]
+                             Optional per-workspace keys:
+                               "team_prefix"  overrides TEAM_PREFIX for that workspace.
+                                              "" disables the filter: every active team
+                                              counts as a product (e.g. MOSK, where all
+                                              teams are products). Key absent = default.
+                               "region"       eu (default) | us | me
+                               "base_url"     custom host, overrides "region"
 SPREADSHEET_ID               The Google Sheets id (the long token in the sheet URL).
 GOOGLE_SERVICE_ACCOUNT_JSON  Full service-account key JSON, as a string.
 
 Optional environment variables
 ------------------------------
-TEAM_PREFIX                  Team name prefix to include. Default: "Product:"
+TEAM_PREFIX                  Default team-name filter. Default: "Product:".
+                             Overridable per workspace with "team_prefix" in
+                             AIKIDO_WORKSPACES ("" = report all active teams).
 AIKIDO_ISSUE_TYPE            Limit to one Aikido issue type, e.g. "sast".
                              Default: empty = all issue types.
 REPORT_WEEK_START            YYYY-MM-DD (a Monday). Default: Monday of the current week.
@@ -57,7 +64,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-REGION_HOSTS = {"eu": "https://app.aikido.dev"}
+REGION_HOSTS = {
+    "eu": "https://app.aikido.dev"
+}
 
 TEAMS_PER_PAGE = 100  # API maximum
 MAX_RETRIES = 6
@@ -364,6 +373,34 @@ def workspace_base_url(workspace: dict) -> str:
     return REGION_HOSTS[region]
 
 
+def effective_team_prefix(workspace: dict, default_prefix: str) -> str:
+    """Per-workspace filter: '' disables it (every active team is a product,
+    e.g. MOSK); a missing "team_prefix" key falls back to TEAM_PREFIX."""
+    if "team_prefix" in workspace:
+        return (workspace["team_prefix"] or "").strip()
+    return default_prefix
+
+
+def select_product_teams(teams: list[dict], prefix: str) -> list[tuple[str, int]]:
+    """Map Aikido teams to (product_name, team_id) pairs.
+
+    With a prefix, only active teams named '<prefix><product>' are kept and the
+    prefix is stripped; with an empty prefix, every active team is a product
+    under its full team name.
+    """
+    selected: list[tuple[str, int]] = []
+    for team in teams:
+        name = (team.get("name") or "").strip()
+        if not name or not team.get("active", True):
+            continue
+        if not prefix:
+            selected.append((name, team["id"]))
+        elif name.lower().startswith(prefix.lower()):
+            product = name[len(prefix):].strip() or name
+            selected.append((product, team["id"]))
+    return selected
+
+
 def main() -> int:
     tz_name = env_str("REPORT_TIMEZONE", "UTC")
     tz = ZoneInfo(tz_name)
@@ -395,7 +432,7 @@ def main() -> int:
 
     log(f"Report week: {week_start} .. {week_last_day} ({week_days} days, tz={tz_name})")
     log(f"Baseline date: {baseline_date} | Current: {now:%Y-%m-%d %H:%M}")
-    log(f"Team prefix: {team_prefix!r} | Issue type: {issue_type or 'all'} | "
+    log(f"Default team prefix: {team_prefix!r} | Issue type: {issue_type or 'all'} | "
         f"ignored counts as resolved: {treat_ignored_as_resolved}")
 
     per_product: dict[str, dict] = defaultdict(new_product_stats)
@@ -409,19 +446,18 @@ def main() -> int:
         )
         client.authenticate()
 
+        prefix = effective_team_prefix(workspace, team_prefix)
+        log(f"[{workspace['name']}] team filter: "
+            + (f"prefix {prefix!r}" if prefix
+               else "none (every active team counts as a product)"))
+
         teams = client.list_teams()
-        product_teams: list[tuple[str, int]] = []
-        for team in teams:
-            name = (team.get("name") or "").strip()
-            if not team.get("active", True):
-                continue
-            if name.lower().startswith(team_prefix.lower()):
-                product = name[len(team_prefix):].strip() or name
-                product_teams.append((product, team["id"]))
+        product_teams = select_product_teams(teams, prefix)
 
         if not product_teams:
-            log(f"[{workspace['name']}] WARNING: no active teams matching prefix "
-                f"{team_prefix!r}. Teams found: "
+            reason = (f"no active teams matching prefix {prefix!r}" if prefix
+                      else "no active teams found")
+            log(f"[{workspace['name']}] WARNING: {reason}. Teams seen: "
                 f"{', '.join(sorted((t.get('name') or '?') for t in teams)) or '(none)'}")
             continue
 
@@ -437,7 +473,7 @@ def main() -> int:
                 f"(all statuses)")
 
     if not per_product:
-        log(f"ERROR: no '{team_prefix}<name>' teams found in any workspace; nothing to report.")
+        log("ERROR: no reportable teams found in any workspace; nothing to report.")
         return 1
 
     values = build_table(per_product, baseline_date, week_start, week_last_day, today)
