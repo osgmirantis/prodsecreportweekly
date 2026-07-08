@@ -1,0 +1,58 @@
+name: Aikido weekly security report
+
+on:
+  schedule:
+    # Every Friday at 15:00 UTC (adjust to taste)
+    - cron: "0 15 * * 5"
+  workflow_dispatch:
+    inputs:
+      week_start:
+        description: "Report week Monday (YYYY-MM-DD). Empty = current week"
+        required: false
+        default: ""
+      baseline_date:
+        description: "Baseline 'As of' date (YYYY-MM-DD). Empty = week start"
+        required: false
+        default: ""
+      issue_type:
+        description: "Limit to one Aikido issue type (e.g. sast). Empty = all"
+        required: false
+        default: ""
+      dry_run:
+        description: "Print the table only, don't touch the sheet"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate report and update Google Sheet
+        env:
+          AIKIDO_WORKSPACES: ${{ secrets.AIKIDO_WORKSPACES }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          REPORT_WEEK_START: ${{ inputs.week_start }}
+          REPORT_BASELINE_DATE: ${{ inputs.baseline_date }}
+          AIKIDO_ISSUE_TYPE: ${{ inputs.issue_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # REPORT_TIMEZONE: "Europe/Madrid"
+          # REPORT_WEEK_DAYS: "5"
+          # TEAM_PREFIX: "Product:"
+        run: python scripts/aikido_weekly_report.py
