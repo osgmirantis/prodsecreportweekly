@@ -95,11 +95,11 @@ Optional per-workspace keys:
 | `TEAM_PREFIX` | `Product:` | Default team filter. Overridable per workspace via `"team_prefix"` in `AIKIDO_WORKSPACES`; an empty string there disables filtering for that workspace so all its active teams become products (e.g. MOSK). |
 | `AIKIDO_ISSUE_TYPE` | *(all)* | Limit to one Aikido issue type, e.g. `sast`, `open_source`, `leaked_secret`, `iac`, `cloud`, ... |
 | `REPORT_WEEK_START` | Monday of the current week | Report window start (YYYY-MM-DD). |
-| `REPORT_WEEK_DAYS` | `5` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
+| `REPORT_WEEK_DAYS` | `7` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
 | `REPORT_BASELINE_DATE` | week start | Date for the left "As of … (total)" column. Set e.g. `2026-07-01` to reproduce a month-start baseline. |
 | `REPORT_TIMEZONE` | `UTC` | Timezone for day boundaries (e.g. `Europe/Madrid`). |
 | `TREAT_IGNORED_AS_RESOLVED` | `true` | Ignored (risk-accepted) issues count as resolved and are excluded from open totals. Set `false` to keep them in the open counts. |
-| `EXCLUDE_IGNORED_BY` | *(unset)* | Comma list of ignore sources (`auto`, `rule`, `user`, `api`). Issues currently ignored by one of these are removed from **all** counts — e.g. `auto,rule` keeps findings that Aikido auto-triages on arrival out of the dashboard entirely. |
+| `EXCLUDE_IGNORED_BY` | *auto,rule* | Comma list of ignore sources (`auto`, `rule`, `user`, `api`). Issues currently ignored by one of these are removed from **all** counts — e.g. `auto,rule` keeps findings that Aikido auto-triages on arrival out of the dashboard entirely. |
 | `WORKSHEET_PREFIX` | `Week ` | Tab name becomes e.g. `Week 2026-07-06`. |
 | `DEBUG_CSV_DIR` | *(unset)* | If set, writes one CSV per workspace/product listing every individual issue counted as added/resolved this week (issue_id, group_id, severity, timestamps, repo). In GHA, tick the `debug_csv` input to get these as a run artifact. |
 | `DRY_RUN` | `false` | Print the table to the job log instead of writing to Sheets. |
