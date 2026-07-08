@@ -3,9 +3,10 @@
 Weekly findings report per product, pulled from the Aikido REST API and written
 to a Google Spreadsheet by a GitHub Actions workflow.
 
-For each Aikido workspace (Mirantis, MOSK, and any added later), the script keeps
-only teams named `Product:<name>`, merges products across workspaces, and produces
-one worksheet per week with this layout:
+Each workspace decides how its teams map to products: by default only teams named
+`Product:<name>` are reported (Mirantis), but a workspace can disable the filter so
+that **every active team counts as a product** (MOSK). Products are merged across
+workspaces, and one worksheet per week is produced with this layout:
 
 | Product | As of 7/6/2026 (total) | Week 07/06 07/10 2026 added (Critical / Other) | Week 07/06 07/10 2026 resolved (Critical / Other) | As of 7/8/2026 |
 |---------|------------------------|------------------------------------------------|---------------------------------------------------|----------------|
@@ -60,12 +61,17 @@ Create these in Settings → Secrets and variables → Actions:
 ```json
 [
   {"name": "Mirantis", "client_id": "AIK_...", "client_secret": "..."},
-  {"name": "MOSK",     "client_id": "AIK_...", "client_secret": "..."}
+  {"name": "MOSK",     "client_id": "AIK_...", "client_secret": "...", "team_prefix": ""}
 ]
 ```
 
-Optional per-workspace keys: `"region"` (`eu` default, `us`, or `me`) or a full
-`"base_url"` if Aikido ever gives you a custom host.
+Optional per-workspace keys:
+
+- `"team_prefix"` — overrides the team filter for that workspace. `""` (as for MOSK
+  above) disables filtering: every active team is treated as a product under its
+  full team name. Leaving the key out keeps the default `Product:<name>` filter.
+- `"region"` — `eu` (default), `us`, or `me`.
+- `"base_url"` — full custom host, overrides `"region"`.
 
 ## Running
 
@@ -86,7 +92,7 @@ Optional per-workspace keys: `"region"` (`eu` default, `us`, or `me`) or a full
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `TEAM_PREFIX` | `Product:` | Only teams whose name starts with this are reported; the rest of the prefix-less teams are ignored. |
+| `TEAM_PREFIX` | `Product:` | Default team filter. Overridable per workspace via `"team_prefix"` in `AIKIDO_WORKSPACES`; an empty string there disables filtering for that workspace so all its active teams become products (e.g. MOSK). |
 | `AIKIDO_ISSUE_TYPE` | *(all)* | Limit to one Aikido issue type, e.g. `sast`, `open_source`, `leaked_secret`, `iac`, `cloud`, ... |
 | `REPORT_WEEK_START` | Monday of the current week | Report window start (YYYY-MM-DD). |
 | `REPORT_WEEK_DAYS` | `5` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
@@ -94,7 +100,33 @@ Optional per-workspace keys: `"region"` (`eu` default, `us`, or `me`) or a full
 | `REPORT_TIMEZONE` | `UTC` | Timezone for day boundaries (e.g. `Europe/Madrid`). |
 | `TREAT_IGNORED_AS_RESOLVED` | `true` | Ignored (risk-accepted) issues count as resolved and are excluded from open totals. Set `false` to keep them in the open counts. |
 | `WORKSHEET_PREFIX` | `Week ` | Tab name becomes e.g. `Week 2026-07-06`. |
+| `DEBUG_CSV_DIR` | *(unset)* | If set, writes one CSV per workspace/product listing every individual issue counted as added/resolved this week (issue_id, group_id, severity, timestamps, repo). In GHA, tick the `debug_csv` input to get these as a run artifact. |
 | `DRY_RUN` | `false` | Print the table to the job log instead of writing to Sheets. |
+
+## Why the numbers differ from the Feed UI
+
+The Feed and this report count different things, so they will rarely match 1:1:
+
+- **Unit**: the Feed lists **issue groups**; the report counts **individual issues**
+  (as required). One Feed card can contain dozens of single findings, so e.g.
+  "7 groups" in the Feed and "81 issues" in the report can describe the same week.
+- **Severity**: a Feed card shows the **group's** severity; the member issues carry
+  their own per-issue `severity`, which is what the report's Critical/Other split
+  uses. A critical group can consist of high/medium individual issues.
+- **First detected**: the Feed's date filter applies to the group; the report uses
+  each issue's own `first_detected_at`. New issues joining an old group are counted
+  by the report but invisible under the Feed's date filter — and vice versa.
+- **Status scope**: the Feed shows open groups only; the report's "added" counts
+  every issue detected in the window even if it was already closed/auto-closed
+  again by the time you look.
+- **Window**: the report defaults to Mon–Fri in UTC. To mirror a UI filter like
+  07/06–07/12 set `REPORT_WEEK_DAYS=7` (and `REPORT_TIMEZONE=Europe/Madrid` for
+  local-midnight boundaries).
+
+To audit a specific product, run the workflow with the `debug_csv` input ticked
+(or set `DEBUG_CSV_DIR` locally) and look up the Feed card's group id in the CSV:
+you'll see exactly which member issues were counted, with their individual
+severities and first-detected dates.
 
 ## Counting rules
 
