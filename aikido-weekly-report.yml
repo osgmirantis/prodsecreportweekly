@@ -2,8 +2,8 @@ name: Aikido weekly security report
 
 on:
   schedule:
-    # Every Friday at 15:00 UTC (adjust to taste)
-    - cron: "0 15 * * 5"
+    # Every Monday at 08:00 UTC (adjust to taste)
+    - cron: "0 8 * * 1"
   workflow_dispatch:
     inputs:
       week_start:
@@ -37,7 +37,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies
