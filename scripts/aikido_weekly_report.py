@@ -48,6 +48,12 @@ REPORT_TIMEZONE              IANA timezone used for week boundaries. Default: "U
 TREAT_IGNORED_AS_RESOLVED    "true"/"false". Default "true": issues marked as
                              ignored (risk accepted) count as resolved and are
                              excluded from open totals.
+EXCLUDE_IGNORED_BY           Comma list of ignore sources ("auto", "rule",
+                             "user", "api"). Issues currently ignored by one of
+                             these are removed from ALL counts, as if they never
+                             existed — e.g. "auto,rule" keeps findings that
+                             Aikido auto-triages on arrival out of the report.
+                             Default: empty (nothing excluded).
 WORKSHEET_PREFIX             Prefix for the worksheet tab name. Default: "Week ".
 DEBUG_CSV_DIR                If set, writes one CSV per workspace/product listing every
                              individual issue counted as added or resolved this week
@@ -70,7 +76,9 @@ from zoneinfo import ZoneInfo
 import requests
 
 REGION_HOSTS = {
-    "eu": "https://app.aikido.dev"
+    "eu": "https://app.aikido.dev",
+    "us": "https://app.us.aikido.dev",
+    "me": "https://app.me.aikido.dev",
 }
 
 TEAMS_PER_PAGE = 100  # API maximum
@@ -200,6 +208,21 @@ def is_critical(issue: dict) -> bool:
     return (issue.get("severity") or "").lower() == "critical"
 
 
+def is_excluded_ignore(issue: dict, excluded_sources: set[str]) -> bool:
+    """True when the issue is currently ignored and its ignore source
+    (ignored_by: 'auto', 'rule', 'user' or 'api') is in the excluded set.
+
+    Excluded issues are removed from ALL report counts — added, resolved and
+    both "as of" totals — as if they never existed. Useful to keep issues
+    that Aikido auto-triages on arrival out of the dashboard entirely.
+    """
+    if not excluded_sources:
+        return False
+    if (issue.get("status") or "").strip().lower() != "ignored":
+        return False
+    return (issue.get("ignored_by") or "").strip().lower() in excluded_sources
+
+
 def resolution_ts(issue: dict, treat_ignored_as_resolved: bool) -> int | None:
     """Timestamp when the issue stopped being open, or None if it's open now.
 
@@ -318,7 +341,7 @@ def write_debug_csv(directory: str, workspace_name: str, product: str,
         writer.writerow([
             "workspace", "product", "issue_id", "group_id", "type", "rule",
             "severity", "status", "first_detected", "closed_at", "ignored_at",
-            "counted_added", "counted_resolved", "counted_open_now",
+            "ignored_by", "counted_added", "counted_resolved", "counted_open_now",
             "code_repo_name", "container_repo_name",
         ])
         for issue in issues:
@@ -334,6 +357,7 @@ def write_debug_csv(directory: str, workspace_name: str, product: str,
                 iso_or_blank(ts_or_none(issue.get("first_detected_at")), tz),
                 iso_or_blank(ts_or_none(issue.get("closed_at")), tz),
                 iso_or_blank(ts_or_none(issue.get("ignored_at")), tz),
+                issue.get("ignored_by") or "",
                 "yes" if c["added"] else "",
                 "yes" if c["resolved"] else "",
                 "yes" if c["current"] else "",
@@ -536,12 +560,15 @@ def main() -> int:
     issue_type = env_str("AIKIDO_ISSUE_TYPE") or None
     treat_ignored_as_resolved = env_bool("TREAT_IGNORED_AS_RESOLVED", True)
     debug_csv_dir = env_str("DEBUG_CSV_DIR")
+    exclude_ignored_by = {s.strip().lower()
+                          for s in env_str("EXCLUDE_IGNORED_BY").split(",") if s.strip()}
     dry_run = env_bool("DRY_RUN", False)
 
     log(f"Report week: {week_start} .. {week_last_day} ({week_days} days, tz={tz_name})")
     log(f"Baseline date: {baseline_date} | Current: {now:%Y-%m-%d %H:%M}")
     log(f"Default team prefix: {team_prefix!r} | Issue type: {issue_type or 'all'} | "
-        f"ignored counts as resolved: {treat_ignored_as_resolved}")
+        f"ignored counts as resolved: {treat_ignored_as_resolved} | "
+        f"exclude ignored_by: {', '.join(sorted(exclude_ignored_by)) or 'none'}")
 
     per_product: dict[str, dict] = defaultdict(new_product_stats)
 
@@ -574,6 +601,14 @@ def main() -> int:
 
         for product, team_id in product_teams:
             issues = client.export_issues(team_id, issue_type)
+            if exclude_ignored_by:
+                kept = [i for i in issues
+                        if not is_excluded_ignore(i, exclude_ignored_by)]
+                if len(kept) != len(issues):
+                    log(f"[{workspace['name']}]   {product}: excluded "
+                        f"{len(issues) - len(kept)} ignored issues "
+                        f"(ignored_by in {sorted(exclude_ignored_by)})")
+                issues = kept
             tally_issues(issues, per_product[product], baseline_ts,
                          week_start_ts, week_end_ts, now_ts,
                          treat_ignored_as_resolved)
