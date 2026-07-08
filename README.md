@@ -133,7 +133,11 @@ severities and first-detected dates.
 - **Critical** = Aikido severity `critical`; **Other** = `high` + `medium` + `low`.
 - **Added** = issues whose `first_detected_at` falls inside the report window.
 - **Resolved** = issues whose `closed_at` (or `ignored_at`, by default) falls inside
-  the window. Snoozed issues remain counted as open.
+  the window. Snoozed issues remain counted as open. The issue's **current status is
+  authoritative**: Aikido keeps stale `closed_at`/`ignored_at` values on issues that
+  were closed and later reopened (the export can show `status=open` with a past
+  `closed_at`), so an issue that is open or snoozed right now is never counted as
+  resolved, whatever its timestamps say.
 - **As of \<date\>** = issues detected on/before that date and not yet
   closed/ignored by then.
 - With the default baseline (= week start), the numbers reconcile per row:
@@ -147,6 +151,8 @@ severities and first-detected dates.
 - If a repository is linked to two different `Product:` teams, its issues count
   toward both products (each product sees its own full picture); the Total row
   would then slightly exceed the true distinct-issue count.
-- If an ignored issue is later un-ignored, Aikido clears `ignored_at`, so a
-  regenerated historical week may differ slightly from what was true at the time.
+- Aikido keeps stale `closed_at`/`ignored_at` values on issues that get reopened,
+  so the script trusts `status` first. Because the export doesn't say *when* such an
+  issue reopened, historical "as of" counts treat it as open since first detection —
+  the current ("As of today") column always matches Aikido's live state.
 - The script retries automatically on Aikido rate limits (HTTP 429) and 5xx errors.
