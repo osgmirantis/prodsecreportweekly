@@ -49,11 +49,16 @@ TREAT_IGNORED_AS_RESOLVED    "true"/"false". Default "true": issues marked as
                              ignored (risk accepted) count as resolved and are
                              excluded from open totals.
 WORKSHEET_PREFIX             Prefix for the worksheet tab name. Default: "Week ".
+DEBUG_CSV_DIR                If set, writes one CSV per workspace/product listing every
+                             individual issue counted as added or resolved this week
+                             (issue_id, group_id, severity, status, timestamps, repo),
+                             for auditing the report against the Aikido Feed UI.
 DRY_RUN                      "true" to print the table to stdout and skip Google Sheets.
 """
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import json
 import os
@@ -225,27 +230,97 @@ def new_product_stats() -> dict:
     }
 
 
+def classify_issue(issue: dict, baseline_ts: int, week_start_ts: int,
+                   week_end_ts: int, now_ts: int,
+                   treat_ignored_as_resolved: bool) -> dict:
+    """Evaluate one individual issue against every report bucket."""
+    first_detected = ts_or_none(issue.get("first_detected_at"))
+    resolved = resolution_ts(issue, treat_ignored_as_resolved)
+    return {
+        "critical": is_critical(issue),
+        "baseline": is_open_at(issue, baseline_ts, treat_ignored_as_resolved),
+        "added": (first_detected is not None
+                  and week_start_ts <= first_detected < week_end_ts),
+        "resolved": (resolved is not None
+                     and week_start_ts <= resolved < week_end_ts),
+        "current": is_open_at(issue, now_ts, treat_ignored_as_resolved),
+    }
+
+
 def tally_issues(issues: list[dict], stats: dict, baseline_ts: int,
                  week_start_ts: int, week_end_ts: int, now_ts: int,
                  treat_ignored_as_resolved: bool) -> None:
     for issue in issues:
-        critical = is_critical(issue)
-        first_detected = ts_or_none(issue.get("first_detected_at"))
-        resolved = resolution_ts(issue, treat_ignored_as_resolved)
-
-        if is_open_at(issue, baseline_ts, treat_ignored_as_resolved):
+        c = classify_issue(issue, baseline_ts, week_start_ts, week_end_ts,
+                           now_ts, treat_ignored_as_resolved)
+        if c["baseline"]:
             stats["baseline"] += 1
-        if first_detected is not None and week_start_ts <= first_detected < week_end_ts:
-            stats["added_critical" if critical else "added_other"] += 1
-        if resolved is not None and week_start_ts <= resolved < week_end_ts:
-            stats["resolved_critical" if critical else "resolved_other"] += 1
-        if is_open_at(issue, now_ts, treat_ignored_as_resolved):
+        if c["added"]:
+            stats["added_critical" if c["critical"] else "added_other"] += 1
+        if c["resolved"]:
+            stats["resolved_critical" if c["critical"] else "resolved_other"] += 1
+        if c["current"]:
             stats["current"] += 1
 
 
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
+
+def iso_or_blank(ts_value: int | None, tz: ZoneInfo) -> str:
+    if ts_value is None:
+        return ""
+    return dt.datetime.fromtimestamp(ts_value, tz).isoformat()
+
+
+def write_debug_csv(directory: str, workspace_name: str, product: str,
+                    issues: list[dict], baseline_ts: int, week_start_ts: int,
+                    week_end_ts: int, now_ts: int,
+                    treat_ignored_as_resolved: bool, tz: ZoneInfo,
+                    week_start: dt.date) -> str:
+    """Dump every individual issue counted as 'added' or 'resolved' this week.
+
+    One row per single issue, including its group_id, so the report numbers can
+    be audited against the Feed UI: look up a Feed card's group id here to see
+    which member issues (and with which per-issue severities and first-detected
+    dates) the report actually counted.
+    """
+    os.makedirs(directory, exist_ok=True)
+
+    def safe(name: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+
+    path = os.path.join(
+        directory, f"{safe(workspace_name)}__{safe(product)}__{week_start:%Y-%m-%d}.csv"
+    )
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([
+            "workspace", "product", "issue_id", "group_id", "type", "rule",
+            "severity", "status", "first_detected", "closed_at", "ignored_at",
+            "counted_added", "counted_resolved",
+            "code_repo_name", "container_repo_name",
+        ])
+        for issue in issues:
+            c = classify_issue(issue, baseline_ts, week_start_ts, week_end_ts,
+                               now_ts, treat_ignored_as_resolved)
+            if not (c["added"] or c["resolved"]):
+                continue
+            writer.writerow([
+                workspace_name, product,
+                issue.get("id"), issue.get("group_id"),
+                issue.get("type"), issue.get("rule"),
+                issue.get("severity"), issue.get("status"),
+                iso_or_blank(ts_or_none(issue.get("first_detected_at")), tz),
+                iso_or_blank(ts_or_none(issue.get("closed_at")), tz),
+                iso_or_blank(ts_or_none(issue.get("ignored_at")), tz),
+                "yes" if c["added"] else "",
+                "yes" if c["resolved"] else "",
+                issue.get("code_repo_name") or "",
+                issue.get("container_repo_name") or "",
+            ])
+    return path
+
 
 def us_date(d: dt.date) -> str:
     return f"{d.month}/{d.day}/{d.year}"
@@ -439,6 +514,7 @@ def main() -> int:
     team_prefix = env_str("TEAM_PREFIX", "Product:")
     issue_type = env_str("AIKIDO_ISSUE_TYPE") or None
     treat_ignored_as_resolved = env_bool("TREAT_IGNORED_AS_RESOLVED", True)
+    debug_csv_dir = env_str("DEBUG_CSV_DIR")
     dry_run = env_bool("DRY_RUN", False)
 
     log(f"Report week: {week_start} .. {week_last_day} ({week_days} days, tz={tz_name})")
@@ -483,6 +559,13 @@ def main() -> int:
             groups = {i.get("group_id") for i in issues if i.get("group_id") is not None}
             log(f"[{workspace['name']}]   {product}: {len(issues)} individual issues "
                 f"fetched ({len(groups)} Aikido groups, all statuses)")
+            if debug_csv_dir:
+                csv_path = write_debug_csv(
+                    debug_csv_dir, workspace["name"], product, issues,
+                    baseline_ts, week_start_ts, week_end_ts, now_ts,
+                    treat_ignored_as_resolved, tz, week_start,
+                )
+                log(f"[{workspace['name']}]   {product}: audit CSV -> {csv_path}")
 
     if not per_product:
         log("ERROR: no reportable teams found in any workspace; nothing to report.")
