@@ -65,7 +65,9 @@ from zoneinfo import ZoneInfo
 import requests
 
 REGION_HOSTS = {
-    "eu": "https://app.aikido.dev"
+    "eu": "https://app.aikido.dev",
+    "us": "https://app.us.aikido.dev",
+    "me": "https://app.me.aikido.dev",
 }
 
 TEAMS_PER_PAGE = 100  # API maximum
@@ -165,6 +167,15 @@ class AikidoClient:
             page += 1
 
     def export_issues(self, team_id: int, issue_type: str | None) -> list[dict]:
+        """Export INDIVIDUAL issues: one list element per single finding.
+
+        Uses /issues/export, which returns ungrouped issues — not the
+        /issue_groups "Feed" view where Aikido bundles related findings into
+        one group. Each element here has its own id, group_id (informational
+        only), first_detected_at, closed_at and ignored_at, so every finding
+        is counted separately. Leaving 'page' unset makes the API return the
+        complete list in one response (no pagination truncation).
+        """
         params = {
             "format": "json",
             "filter_status": "all",  # need closed/ignored too, for "resolved" counts
@@ -469,8 +480,9 @@ def main() -> int:
             tally_issues(issues, per_product[product], baseline_ts,
                          week_start_ts, week_end_ts, now_ts,
                          treat_ignored_as_resolved)
-            log(f"[{workspace['name']}]   {product}: {len(issues)} issues fetched "
-                f"(all statuses)")
+            groups = {i.get("group_id") for i in issues if i.get("group_id") is not None}
+            log(f"[{workspace['name']}]   {product}: {len(issues)} individual issues "
+                f"fetched ({len(groups)} Aikido groups, all statuses)")
 
     if not per_product:
         log("ERROR: no reportable teams found in any workspace; nothing to report.")
