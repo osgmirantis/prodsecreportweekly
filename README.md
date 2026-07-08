@@ -99,6 +99,7 @@ Optional per-workspace keys:
 | `REPORT_BASELINE_DATE` | week start | Date for the left "As of … (total)" column. Set e.g. `2026-07-01` to reproduce a month-start baseline. |
 | `REPORT_TIMEZONE` | `UTC` | Timezone for day boundaries (e.g. `Europe/Madrid`). |
 | `TREAT_IGNORED_AS_RESOLVED` | `true` | Ignored (risk-accepted) issues count as resolved and are excluded from open totals. Set `false` to keep them in the open counts. |
+| `EXCLUDE_IGNORED_BY` | *(unset)* | Comma list of ignore sources (`auto`, `rule`, `user`, `api`). Issues currently ignored by one of these are removed from **all** counts — e.g. `auto,rule` keeps findings that Aikido auto-triages on arrival out of the dashboard entirely. |
 | `WORKSHEET_PREFIX` | `Week ` | Tab name becomes e.g. `Week 2026-07-06`. |
 | `DEBUG_CSV_DIR` | *(unset)* | If set, writes one CSV per workspace/product listing every individual issue counted as added/resolved this week (issue_id, group_id, severity, timestamps, repo). In GHA, tick the `debug_csv` input to get these as a run artifact. |
 | `DRY_RUN` | `false` | Print the table to the job log instead of writing to Sheets. |
@@ -119,6 +120,11 @@ The Feed and this report count different things, so they will rarely match 1:1:
 - **Status scope**: the Feed shows open groups only; the report's "added" counts
   every issue detected in the window even if it was already closed/auto-closed
   again by the time you look.
+- **Ignored issues are hidden in the UI's default views** (issue lists show open
+  statuses like New / To do) but the report counts them: an issue detected and
+  auto-ignored in the same week is +1 added and +1 resolved. Include the Ignored
+  status in the UI filter to see them — or set `EXCLUDE_IGNORED_BY=auto,rule` to
+  keep machine-triaged issues out of the report altogether.
 - **Window**: the report defaults to Mon–Fri in UTC. To mirror a UI filter like
   07/06–07/12 set `REPORT_WEEK_DAYS=7` (and `REPORT_TIMEZONE=Europe/Madrid` for
   local-midnight boundaries).
