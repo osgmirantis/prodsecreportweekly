@@ -2,7 +2,7 @@ name: Aikido weekly security report
 
 on:
   schedule:
-    - cron: "0 09 * * 1"
+    - cron: "0 9 * * 1"
   workflow_dispatch:
     inputs:
       week_start:
@@ -40,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies
@@ -59,6 +59,7 @@ jobs:
           REPORT_TIMEZONE: "Europe/Madrid"
           REPORT_WEEK_DAYS: "7"
           # TEAM_PREFIX: "Product:"
+          EXCLUDE_IGNORED_BY: "auto,rule"
         run: python scripts/aikido_weekly_report.py
 
       - name: Upload audit CSVs
