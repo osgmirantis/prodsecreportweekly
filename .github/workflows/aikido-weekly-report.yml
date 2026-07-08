@@ -2,8 +2,7 @@ name: Aikido weekly security report
 
 on:
   schedule:
-    # Every Monday at 08:00 UTC (adjust to taste)
-    - cron: "0 8 * * 1"
+    - cron: "0 9 * * 1"
   workflow_dispatch:
     inputs:
       week_start:
@@ -52,7 +51,7 @@ jobs:
           REPORT_BASELINE_DATE: ${{ inputs.baseline_date }}
           AIKIDO_ISSUE_TYPE: ${{ inputs.issue_type }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # REPORT_TIMEZONE: "Europe/Madrid"
-          # REPORT_WEEK_DAYS: "5"
+          REPORT_TIMEZONE: "Europe/Madrid"
+          REPORT_WEEK_DAYS: "7"
           # TEAM_PREFIX: "Product:"
         run: python scripts/aikido_weekly_report.py
