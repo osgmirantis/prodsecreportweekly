@@ -57,11 +57,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-REGION_HOSTS = {
-    "eu": "https://app.aikido.dev",
-    "us": "https://app.us.aikido.dev",
-    "me": "https://app.me.aikido.dev",
-}
+REGION_HOSTS = {"eu": "https://app.aikido.dev"}
 
 TEAMS_PER_PAGE = 100  # API maximum
 MAX_RETRIES = 6
