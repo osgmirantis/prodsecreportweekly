@@ -2,7 +2,7 @@ name: Aikido weekly security report
 
 on:
   schedule:
-    - cron: "0 9 * * 1"
+    - cron: "0 09 * * 1"
   workflow_dispatch:
     inputs:
       week_start:
@@ -21,6 +21,10 @@ on:
         description: "Print the table only, don't touch the sheet"
         type: boolean
         default: false
+      debug_csv:
+        description: "Upload per-issue audit CSVs (added/resolved) as a run artifact"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,7 +40,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
@@ -51,7 +55,16 @@ jobs:
           REPORT_BASELINE_DATE: ${{ inputs.baseline_date }}
           AIKIDO_ISSUE_TYPE: ${{ inputs.issue_type }}
           DRY_RUN: ${{ inputs.dry_run }}
+          DEBUG_CSV_DIR: ${{ inputs.debug_csv == true && 'debug_csv' || '' }}
           REPORT_TIMEZONE: "Europe/Madrid"
           REPORT_WEEK_DAYS: "7"
           # TEAM_PREFIX: "Product:"
         run: python scripts/aikido_weekly_report.py
+
+      - name: Upload audit CSVs
+        if: ${{ inputs.debug_csv == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: aikido-audit-csv
+          path: debug_csv/
+          retention-days: 14
