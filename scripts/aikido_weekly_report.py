@@ -70,9 +70,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 REGION_HOSTS = {
-    "eu": "https://app.aikido.dev",
-    "us": "https://app.us.aikido.dev",
-    "me": "https://app.me.aikido.dev",
+    "eu": "https://app.aikido.dev"
 }
 
 TEAMS_PER_PAGE = 100  # API maximum
@@ -203,12 +201,34 @@ def is_critical(issue: dict) -> bool:
 
 
 def resolution_ts(issue: dict, treat_ignored_as_resolved: bool) -> int | None:
-    """Timestamp when the issue stopped being open, or None if still open."""
+    """Timestamp when the issue stopped being open, or None if it's open now.
+
+    The issue's CURRENT STATUS is authoritative. Aikido keeps stale closed_at /
+    ignored_at values on issues that were closed and later reopened (the export
+    can show status=open together with a past closed_at, contrary to the API
+    docs), so timestamps only count when the status confirms the issue really
+    is closed or ignored right now.
+    """
+    status = (issue.get("status") or "").strip().lower()
+    if status in ("open", "snoozed"):
+        return None  # open right now; leftover timestamps are stale reopen artifacts
+    if status == "ignored" and not treat_ignored_as_resolved:
+        return None  # risk-accepted issues stay in the open counts
     closed = ts_or_none(issue.get("closed_at"))
-    ignored = ts_or_none(issue.get("ignored_at")) if treat_ignored_as_resolved else None
-    if closed and ignored:
-        return min(closed, ignored)
-    return closed or ignored
+    ignored = ts_or_none(issue.get("ignored_at"))
+    if status == "closed":
+        resolved = closed if closed is not None else ignored
+    elif status == "ignored":
+        resolved = ignored if ignored is not None else closed
+    else:
+        # Unknown/missing status: best effort from whichever timestamps exist.
+        stamps = [t for t in (closed, ignored) if t is not None]
+        return min(stamps) if stamps else None
+    if resolved is None:
+        # Marked closed/ignored but no timestamp recorded: resolve it at
+        # detection time so it never inflates any open total.
+        resolved = ts_or_none(issue.get("first_detected_at"))
+    return resolved
 
 
 def is_open_at(issue: dict, ts: int, treat_ignored_as_resolved: bool) -> bool:
@@ -298,7 +318,7 @@ def write_debug_csv(directory: str, workspace_name: str, product: str,
         writer.writerow([
             "workspace", "product", "issue_id", "group_id", "type", "rule",
             "severity", "status", "first_detected", "closed_at", "ignored_at",
-            "counted_added", "counted_resolved",
+            "counted_added", "counted_resolved", "counted_open_now",
             "code_repo_name", "container_repo_name",
         ])
         for issue in issues:
@@ -316,6 +336,7 @@ def write_debug_csv(directory: str, workspace_name: str, product: str,
                 iso_or_blank(ts_or_none(issue.get("ignored_at")), tz),
                 "yes" if c["added"] else "",
                 "yes" if c["resolved"] else "",
+                "yes" if c["current"] else "",
                 issue.get("code_repo_name") or "",
                 issue.get("container_repo_name") or "",
             ])
