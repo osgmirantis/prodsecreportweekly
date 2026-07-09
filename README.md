@@ -85,8 +85,9 @@ Optional per-workspace keys:
 ### 4. Email delivery (optional)
 
 If `EMAIL_TO` is set, each run also exports the weekly spreadsheet (xlsx by
-default, or pdf) and emails it as an attachment, with the report table and the
-Sheet link in the body. Add these extra secrets:
+default, or pdf) and emails it as an attachment. The subject names the report
+and week; the body contains only the link to the live Google Sheet — the stats
+themselves are in the attachment. Add these extra secrets:
 
 | Secret | Value |
 |--------|-------|
