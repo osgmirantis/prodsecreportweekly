@@ -653,8 +653,7 @@ def smtp_send(message, host: str, port: int, username: str, password: str,
         server.send_message(message)
 
 
-def send_weekly_email(file_id: str, sheet_url: str, values: list[list],
-                      week_start: dt.date, week_last_day: dt.date,
+def send_weekly_email(file_id: str, sheet_url: str, week_start: dt.date,
                       recipients: list[str]) -> None:
     from google.auth.transport.requests import AuthorizedSession
 
@@ -681,9 +680,9 @@ def send_weekly_email(file_id: str, sheet_url: str, values: list[list],
     )
     filename = f"{title}.{extension}"
 
+    # The subject already names the report and week; the stats live in the
+    # attachment, so the body is just the link to the live sheet.
     body = (
-        f"Aikido weekly security report, week {week_start} .. {week_last_day}.\n\n"
-        f"{format_table(values)}\n\n"
         f"Google Sheet: {sheet_url}\n\n"
         "Generated automatically by aikido_weekly_report.py"
     )
@@ -871,8 +870,7 @@ def main() -> int:
 
     recipients = [a.strip() for a in env_str("EMAIL_TO").split(",") if a.strip()]
     if recipients:
-        send_weekly_email(file_id, url, values, week_start, week_last_day,
-                          recipients)
+        send_weekly_email(file_id, url, week_start, recipients)
     else:
         log("EMAIL_TO not set -> skipping email delivery.")
     return 0
