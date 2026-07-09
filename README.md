@@ -6,7 +6,9 @@ to a Google Spreadsheet by a GitHub Actions workflow.
 Each workspace decides how its teams map to products: by default only teams named
 `Product:<name>` are reported (Mirantis), but a workspace can disable the filter so
 that **every active team counts as a product** (MOSK). Products are merged across
-workspaces, and one worksheet per week is produced with this layout:
+workspaces, and **one new spreadsheet file per week** is created in a Drive folder
+(named e.g. `Aikido weekly report 2026-07-06`), each containing a single sheet with
+this layout:
 
 | Product | As of 7/6/2026 (total) | Week 07/06 07/10 2026 added (Critical / Other) | Week 07/06 07/10 2026 resolved (Critical / Other) | As of 7/8/2026 |
 |---------|------------------------|------------------------------------------------|---------------------------------------------------|----------------|
@@ -36,15 +38,21 @@ For **each** workspace (Mirantis, MOSK, ...):
    OAuth client. Grant it at least the `issues:read` and `teams:read` scopes.
 2. Note the `client_id` and `client_secret`.
 
-### 2. Google service account
+### 2. Google service account + Shared Drive folder
 
-1. In Google Cloud Console, create (or reuse) a project and enable the
-   **Google Sheets API**.
+1. In Google Cloud Console, create (or reuse) a project and enable both the
+   **Google Sheets API** and the **Google Drive API**.
 2. Create a **service account** and generate a **JSON key**.
-3. Create the target spreadsheet (or use an existing one) and **share it with the
-   service account's email** (`something@project.iam.gserviceaccount.com`) as **Editor**.
-4. Note the spreadsheet id — the long token in the URL:
-   `https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit`.
+3. In Google Drive, create a folder **on a Shared Drive** (e.g.
+   `Shared drives → Security → Aikido weekly reports`) and share it with the
+   service account's email (`something@project.iam.gserviceaccount.com`) as
+   **Content manager**.
+
+   > A Shared Drive is required, not a regular "My Drive" folder: service
+   > accounts have no Drive storage quota and cannot own files, so creating
+   > files anywhere outside a Shared Drive fails with `403 storageQuotaExceeded`.
+4. Note the folder id — the last token in the folder URL:
+   `https://drive.google.com/drive/folders/<DRIVE_FOLDER_ID>`.
 
 ### 3. GitHub repository secrets
 
@@ -54,7 +62,8 @@ Create these in Settings → Secrets and variables → Actions:
 |--------|-------|
 | `AIKIDO_WORKSPACES` | JSON list of workspaces, see below |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | The full contents of the service-account JSON key |
-| `SPREADSHEET_ID` | The spreadsheet id from the URL |
+| `DRIVE_FOLDER_ID` | The Shared Drive folder id — one spreadsheet file per week is created here |
+| `SPREADSHEET_ID` | *(optional legacy mode, used only if `DRIVE_FOLDER_ID` is unset)* one worksheet per week inside this single spreadsheet |
 
 `AIKIDO_WORKSPACES` format (add more entries as new workspaces appear):
 
@@ -73,12 +82,33 @@ Optional per-workspace keys:
 - `"region"` — `eu` (default), `us`, or `me`.
 - `"base_url"` — full custom host, overrides `"region"`.
 
+### 4. Email delivery (optional)
+
+If `EMAIL_TO` is set, each run also exports the weekly spreadsheet (xlsx by
+default, or pdf) and emails it as an attachment, with the report table and the
+Sheet link in the body. Add these extra secrets:
+
+| Secret | Value |
+|--------|-------|
+| `EMAIL_TO` | Comma-separated recipients, e.g. `security@example.com, dev-leads@example.com` |
+| `EMAIL_FROM` | Sender address (defaults to `SMTP_USERNAME`) |
+| `SMTP_HOST` | Your mail relay, e.g. `smtp.gmail.com` |
+| `SMTP_PORT` | `587` (STARTTLS, default) or `465` (implicit TLS) |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | Credentials, if the relay requires auth. For Gmail/Workspace use an **app password**, not the account password. |
+
+Leave `EMAIL_TO` unset to disable email entirely. In legacy `SPREADSHEET_ID` mode
+the exported attachment contains **all** accumulated tabs, so email works best
+with the per-week `DRIVE_FOLDER_ID` mode.
+
 ## Running
 
 - **Scheduled:** the workflow runs every Friday 15:00 UTC (edit the cron in
   `.github/workflows/aikido-weekly-report.yml`).
 - **Manual:** Actions → "Aikido weekly security report" → *Run workflow*. You can
   override the week, the baseline date, restrict to one issue type, or do a dry run.
+- Re-running the same week doesn't create duplicates: the script finds the existing
+  weekly file by name in the folder and rewrites its sheet. Everyone with access to
+  the Shared Drive folder automatically sees each new weekly file.
 - **Locally:**
 
   ```bash
@@ -95,12 +125,16 @@ Optional per-workspace keys:
 | `TEAM_PREFIX` | `Product:` | Default team filter. Overridable per workspace via `"team_prefix"` in `AIKIDO_WORKSPACES`; an empty string there disables filtering for that workspace so all its active teams become products (e.g. MOSK). |
 | `AIKIDO_ISSUE_TYPE` | *(all)* | Limit to one Aikido issue type, e.g. `sast`, `open_source`, `leaked_secret`, `iac`, `cloud`, ... |
 | `REPORT_WEEK_START` | Monday of the current week | Report window start (YYYY-MM-DD). |
-| `REPORT_WEEK_DAYS` | `7` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
+| `REPORT_WEEK_DAYS` | `5` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
 | `REPORT_BASELINE_DATE` | week start | Date for the left "As of … (total)" column. Set e.g. `2026-07-01` to reproduce a month-start baseline. |
 | `REPORT_TIMEZONE` | `UTC` | Timezone for day boundaries (e.g. `Europe/Madrid`). |
 | `TREAT_IGNORED_AS_RESOLVED` | `true` | Ignored (risk-accepted) issues count as resolved and are excluded from open totals. Set `false` to keep them in the open counts. |
-| `EXCLUDE_IGNORED_BY` | *auto,rule* | Comma list of ignore sources (`auto`, `rule`, `user`, `api`). Issues currently ignored by one of these are removed from **all** counts — e.g. `auto,rule` keeps findings that Aikido auto-triages on arrival out of the dashboard entirely. |
-| `WORKSHEET_PREFIX` | `Week ` | Tab name becomes e.g. `Week 2026-07-06`. |
+| `EXCLUDE_IGNORED_BY` | *(unset)* | Comma list of ignore sources (`auto`, `rule`, `user`, `api`). Issues currently ignored by one of these are removed from **all** counts — e.g. `auto,rule` keeps findings that Aikido auto-triages on arrival out of the dashboard entirely. |
+| `WORKSHEET_PREFIX` | `Week ` | Sheet tab name inside each file, e.g. `Week 2026-07-06`. |
+| `SPREADSHEET_FILE_PREFIX` | `Aikido weekly report ` | Weekly file names in the Drive folder, e.g. `Aikido weekly report 2026-07-06`. |
+| `EMAIL_TO` | *(unset)* | Comma-separated recipients; setting it enables email delivery of the exported report. |
+| `EMAIL_ATTACHMENT_FORMAT` | `xlsx` | Attachment format: `xlsx` or `pdf`. |
+| `SMTP_STARTTLS` | `true` | Set `false` only for plain internal relays (ignored on port 465). |
 | `DEBUG_CSV_DIR` | *(unset)* | If set, writes one CSV per workspace/product listing every individual issue counted as added/resolved this week (issue_id, group_id, severity, timestamps, repo). In GHA, tick the `debug_csv` input to get these as a run artifact. |
 | `DRY_RUN` | `false` | Print the table to the job log instead of writing to Sheets. |
 
