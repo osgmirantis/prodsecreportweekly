@@ -50,7 +50,15 @@ jobs:
         env:
           AIKIDO_WORKSPACES: ${{ secrets.AIKIDO_WORKSPACES }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}  # legacy fallback: tabs in one file
+          # Email delivery (optional; active when EMAIL_TO is set)
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           REPORT_WEEK_START: ${{ inputs.week_start }}
           REPORT_BASELINE_DATE: ${{ inputs.baseline_date }}
           AIKIDO_ISSUE_TYPE: ${{ inputs.issue_type }}
