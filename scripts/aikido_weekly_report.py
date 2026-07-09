@@ -29,8 +29,19 @@ AIKIDO_WORKSPACES            JSON list of workspaces, e.g.
                                               teams are products). Key absent = default.
                                "region"       eu (default) | us | me
                                "base_url"     custom host, overrides "region"
-SPREADSHEET_ID               The Google Sheets id (the long token in the sheet URL).
+DRIVE_FOLDER_ID              Folder id on a SHARED DRIVE, shared with the service
+                             account as Content manager. The script creates ONE NEW
+                             SPREADSHEET FILE PER WEEK inside it (re-runs of the same
+                             week reuse the file). Must be a Shared Drive folder:
+                             service accounts have no storage quota and cannot own
+                             files, so "My Drive" folders fail with 403.
 GOOGLE_SERVICE_ACCOUNT_JSON  Full service-account key JSON, as a string.
+
+Alternative output mode
+-----------------------
+SPREADSHEET_ID               Legacy mode, used when DRIVE_FOLDER_ID is not set:
+                             one worksheet per week inside this single spreadsheet
+                             (tabs accumulate over time).
 
 Optional environment variables
 ------------------------------
@@ -55,11 +66,26 @@ EXCLUDE_IGNORED_BY           Comma list of ignore sources ("auto", "rule",
                              Aikido auto-triages on arrival out of the report.
                              Default: empty (nothing excluded).
 WORKSHEET_PREFIX             Prefix for the worksheet tab name. Default: "Week ".
+SPREADSHEET_FILE_PREFIX      Prefix for weekly file names (DRIVE_FOLDER_ID mode).
+                             Default: "Aikido weekly report " -> e.g.
+                             "Aikido weekly report 2026-07-06".
 DEBUG_CSV_DIR                If set, writes one CSV per workspace/product listing every
                              individual issue counted as added or resolved this week
                              (issue_id, group_id, severity, status, timestamps, repo),
                              for auditing the report against the Aikido Feed UI.
 DRY_RUN                      "true" to print the table to stdout and skip Google Sheets.
+
+Email delivery (optional, enabled when EMAIL_TO is set)
+--------------------------------------------------------
+EMAIL_TO                     Comma-separated recipient list. Setting this makes the
+                             script export the weekly spreadsheet and email it as an
+                             attachment after writing to Drive.
+SMTP_HOST                    SMTP relay host (required when EMAIL_TO is set).
+SMTP_PORT                    Default 587 (STARTTLS). Use 465 for implicit TLS.
+SMTP_USERNAME / SMTP_PASSWORD  Optional; used to authenticate when set.
+SMTP_STARTTLS                Default "true". Set "false" only for plain internal relays.
+EMAIL_FROM                   Sender address. Defaults to SMTP_USERNAME.
+EMAIL_ATTACHMENT_FORMAT      "xlsx" (default) or "pdf".
 """
 
 from __future__ import annotations
@@ -398,24 +424,76 @@ def build_table(per_product: dict[str, dict], baseline_date: dt.date,
     return [header_row_1, header_row_2] + rows + [total_row]
 
 
-def print_table(values: list[list]) -> None:
+def format_table(values: list[list]) -> str:
     widths = [max(len(str(row[i])) for row in values) for i in range(len(values[0]))]
-    for row in values:
-        log("  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row)))
-
-
-def write_to_google_sheets(values: list[list], worksheet_title: str,
-                           now: dt.datetime, tz_name: str) -> str:
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    credentials = Credentials.from_service_account_info(
-        service_account_info,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    return "\n".join(
+        "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+        for row in values
     )
-    gc = gspread.authorize(credentials)
-    spreadsheet = gc.open_by_key(os.environ["SPREADSHEET_ID"])
+
+
+def print_table(values: list[list]) -> None:
+    log(format_table(values))
+
+
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
+SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
+def weekly_file_title(week_start: dt.date) -> str:
+    # Raw read (no strip): prefixes legitimately end with a space.
+    prefix = os.environ.get("SPREADSHEET_FILE_PREFIX", "Aikido weekly report ")
+    return f"{prefix}{week_start:%Y-%m-%d}"
+
+
+def find_or_create_weekly_spreadsheet(session, folder_id: str, title: str) -> str:
+    """Return the file id of this week's spreadsheet in the Drive folder,
+    creating it if it doesn't exist yet (so re-runs reuse the same file).
+
+    The folder must live on a SHARED DRIVE: service accounts have no Drive
+    storage quota and cannot own files, so creating inside a regular
+    "My Drive" folder fails with 403 storageQuotaExceeded.
+    """
+    query = (f"name = '{title}' and '{folder_id}' in parents "
+             f"and mimeType = '{SPREADSHEET_MIME}' and trashed = false")
+    response = session.get(DRIVE_FILES_URL, params={
+        "q": query,
+        "fields": "files(id, name)",
+        "supportsAllDrives": "true",
+        "includeItemsFromAllDrives": "true",
+    })
+    response.raise_for_status()
+    existing = response.json().get("files", [])
+    if existing:
+        log(f"Reusing existing spreadsheet {title!r} ({existing[0]['id']})")
+        return existing[0]["id"]
+
+    response = session.post(
+        DRIVE_FILES_URL,
+        params={"supportsAllDrives": "true", "fields": "id"},
+        json={"name": title, "mimeType": SPREADSHEET_MIME, "parents": [folder_id]},
+    )
+    if response.status_code == 403 and "storageQuotaExceeded" in response.text:
+        raise SystemExit(
+            "Drive refused to create the file: service accounts cannot own files "
+            "(no storage quota). Move the target folder to a SHARED DRIVE and "
+            "share it with the service account as Content manager."
+        )
+    response.raise_for_status()
+    file_id = response.json()["id"]
+    log(f"Created spreadsheet {title!r} ({file_id})")
+    return file_id
+
+
+def render_report_worksheet(spreadsheet, worksheet_title: str, values: list[list],
+                            now: dt.datetime, tz_name: str,
+                            drop_other_worksheets: bool) -> None:
+    """(Re)build the report worksheet with the dashboard layout and formatting."""
+    import gspread
 
     # Recreate the worksheet so stale merges/formatting never linger.
     try:
@@ -426,6 +504,12 @@ def write_to_google_sheets(values: list[list], worksheet_title: str,
     worksheet = spreadsheet.add_worksheet(
         title=worksheet_title, rows=max(50, len(values) + 10), cols=10, index=0
     )
+    if drop_other_worksheets:
+        # Weekly files hold exactly one sheet: remove the default "Sheet1"
+        # and anything left over from previous runs.
+        for other in spreadsheet.worksheets():
+            if other.id != worksheet.id:
+                spreadsheet.del_worksheet(other)
 
     worksheet.update(values=values, range_name="A1")
 
@@ -470,7 +554,143 @@ def write_to_google_sheets(values: list[list], worksheet_title: str,
         "textFormat": {"italic": True, "fontSize": 9,
                        "foregroundColor": {"red": 0.5, "green": 0.5, "blue": 0.5}},
     })
-    return spreadsheet.url
+
+
+def google_credentials():
+    """Service-account credentials shared by the Sheets writer, the Drive
+    file management and the email attachment export."""
+    from google.oauth2.service_account import Credentials
+
+    service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    return Credentials.from_service_account_info(
+        service_account_info, scopes=GOOGLE_SCOPES,
+    )
+
+
+def write_to_google_sheets(values: list[list], worksheet_title: str,
+                           week_start: dt.date, now: dt.datetime,
+                           tz_name: str) -> tuple[str, str]:
+    """Write the report; returns (spreadsheet url, spreadsheet file id)."""
+    import gspread
+    from google.auth.transport.requests import AuthorizedSession
+
+    credentials = google_credentials()
+    gc = gspread.authorize(credentials)
+
+    folder_id = env_str("DRIVE_FOLDER_ID")
+    if folder_id:
+        # One spreadsheet FILE per week inside the Drive folder.
+        title = weekly_file_title(week_start)
+        file_id = find_or_create_weekly_spreadsheet(
+            AuthorizedSession(credentials), folder_id, title
+        )
+        spreadsheet = gc.open_by_key(file_id)
+        render_report_worksheet(spreadsheet, worksheet_title, values, now,
+                                tz_name, drop_other_worksheets=True)
+    else:
+        # Legacy mode: one worksheet per week inside a single spreadsheet.
+        file_id = os.environ["SPREADSHEET_ID"]
+        spreadsheet = gc.open_by_key(file_id)
+        render_report_worksheet(spreadsheet, worksheet_title, values, now,
+                                tz_name, drop_other_worksheets=False)
+    return spreadsheet.url, file_id
+
+
+# --------------------------------------------------------------------------
+# Email delivery
+# --------------------------------------------------------------------------
+
+EXPORT_FORMATS = {
+    # format -> (Drive export mime type, file extension)
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+    "pdf": ("application/pdf", "pdf"),
+}
+
+
+def export_spreadsheet(session, file_id: str, mime_type: str) -> bytes:
+    """Download the Google Sheet in the given format via the Drive export API."""
+    response = session.get(
+        f"{DRIVE_FILES_URL}/{file_id}/export",
+        params={"mimeType": mime_type, "supportsAllDrives": "true"},
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def build_report_email(subject: str, body: str, sender: str,
+                       recipients: list[str], attachment: bytes,
+                       filename: str, mime_type: str):
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = ", ".join(recipients)
+    message.set_content(body)
+    maintype, subtype = mime_type.split("/", 1)
+    message.add_attachment(attachment, maintype=maintype, subtype=subtype,
+                           filename=filename)
+    return message
+
+
+def smtp_send(message, host: str, port: int, username: str, password: str,
+              use_starttls: bool) -> None:
+    import smtplib
+
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=60) as server:
+            if username:
+                server.login(username, password)
+            server.send_message(message)
+        return
+    with smtplib.SMTP(host, port, timeout=60) as server:
+        server.ehlo()
+        if use_starttls:
+            server.starttls()
+            server.ehlo()
+        if username:
+            server.login(username, password)
+        server.send_message(message)
+
+
+def send_weekly_email(file_id: str, sheet_url: str, values: list[list],
+                      week_start: dt.date, week_last_day: dt.date,
+                      recipients: list[str]) -> None:
+    from google.auth.transport.requests import AuthorizedSession
+
+    host = env_str("SMTP_HOST")
+    if not host:
+        raise SystemExit("EMAIL_TO is set but SMTP_HOST is missing.")
+    port = int(env_str("SMTP_PORT", "587"))
+    username = env_str("SMTP_USERNAME")
+    password = env_str("SMTP_PASSWORD")
+    sender = env_str("EMAIL_FROM") or username
+    if not sender:
+        raise SystemExit("Set EMAIL_FROM (or SMTP_USERNAME) to define the sender address.")
+    use_starttls = env_bool("SMTP_STARTTLS", True)
+
+    fmt = env_str("EMAIL_ATTACHMENT_FORMAT", "xlsx").lower()
+    if fmt not in EXPORT_FORMATS:
+        raise SystemExit(f"EMAIL_ATTACHMENT_FORMAT must be one of: "
+                         f"{', '.join(EXPORT_FORMATS)} (got {fmt!r}).")
+    mime_type, extension = EXPORT_FORMATS[fmt]
+
+    title = weekly_file_title(week_start)
+    attachment = export_spreadsheet(
+        AuthorizedSession(google_credentials()), file_id, mime_type
+    )
+    filename = f"{title}.{extension}"
+
+    body = (
+        f"Aikido weekly security report, week {week_start} .. {week_last_day}.\n\n"
+        f"{format_table(values)}\n\n"
+        f"Google Sheet: {sheet_url}\n\n"
+        "Generated automatically by aikido_weekly_report.py"
+    )
+    message = build_report_email(title, body, sender, recipients,
+                                 attachment, filename, mime_type)
+    smtp_send(message, host, port, username, password, use_starttls)
+    log(f"Emailed {filename!r} ({len(attachment)} bytes) to {', '.join(recipients)}")
 
 
 # --------------------------------------------------------------------------
@@ -635,13 +855,26 @@ def main() -> int:
         log("\nDRY_RUN=true -> skipping Google Sheets update.")
         return 0
 
-    for var in ("SPREADSHEET_ID", "GOOGLE_SERVICE_ACCOUNT_JSON"):
-        if not env_str(var):
-            raise SystemExit(f"{var} is not set (required unless DRY_RUN=true).")
+    if not env_str("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        raise SystemExit("GOOGLE_SERVICE_ACCOUNT_JSON is not set (required unless DRY_RUN=true).")
+    if not env_str("DRIVE_FOLDER_ID") and not env_str("SPREADSHEET_ID"):
+        raise SystemExit(
+            "Set DRIVE_FOLDER_ID (a Shared Drive folder: one spreadsheet file per week) "
+            "or SPREADSHEET_ID (legacy: one worksheet per week in a single spreadsheet)."
+        )
 
-    worksheet_title = f"{env_str('WORKSHEET_PREFIX', 'Week ')}{week_start:%Y-%m-%d}"
-    url = write_to_google_sheets(values, worksheet_title, now, tz_name)
-    log(f"\nWrote worksheet {worksheet_title!r} -> {url}")
+    worksheet_title = (os.environ.get("WORKSHEET_PREFIX", "Week ")
+                       + f"{week_start:%Y-%m-%d}")
+    url, file_id = write_to_google_sheets(values, worksheet_title, week_start,
+                                          now, tz_name)
+    log(f"\nWrote report {worksheet_title!r} -> {url}")
+
+    recipients = [a.strip() for a in env_str("EMAIL_TO").split(",") if a.strip()]
+    if recipients:
+        send_weekly_email(file_id, url, values, week_start, week_last_day,
+                          recipients)
+    else:
+        log("EMAIL_TO not set -> skipping email delivery.")
     return 0
 
 
