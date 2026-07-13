@@ -103,7 +103,9 @@ with the per-week `DRIVE_FOLDER_ID` mode.
 
 ## Running
 
-- **Scheduled:** the workflow runs every Friday 15:00 UTC (edit the cron in
+- **Scheduled:** the workflow runs every **Monday at 07:00 UTC** — 09:00 in Madrid
+  during CEST; 08:00 CET in winter, since GitHub cron runs in UTC and can't track
+  DST — and reports on the **previous week** (edit the cron in
   `.github/workflows/aikido-weekly-report.yml`).
 - **Manual:** Actions → "Aikido weekly security report" → *Run workflow*. You can
   override the week, the baseline date, restrict to one issue type, or do a dry run.
@@ -125,7 +127,8 @@ with the per-week `DRIVE_FOLDER_ID` mode.
 |----------|---------|---------|
 | `TEAM_PREFIX` | `Product:` | Default team filter. Overridable per workspace via `"team_prefix"` in `AIKIDO_WORKSPACES`; an empty string there disables filtering for that workspace so all its active teams become products (e.g. MOSK). |
 | `AIKIDO_ISSUE_TYPE` | *(all)* | Limit to one Aikido issue type, e.g. `sast`, `open_source`, `leaked_secret`, `iac`, `cloud`, ... |
-| `REPORT_WEEK_START` | Monday of the current week | Report window start (YYYY-MM-DD). |
+| `REPORT_WEEK` | `previous` | Which week to analyze relative to the run date: `previous` (the completed week — fits the Monday-morning schedule) or `current`. |
+| `REPORT_WEEK_START` | *(from `REPORT_WEEK`)* | Explicit report window start (YYYY-MM-DD, a Monday); overrides `REPORT_WEEK`. |
 | `REPORT_WEEK_DAYS` | `5` | Window length: 5 = Mon–Fri like the dashboard header; 7 also counts weekend activity. |
 | `REPORT_BASELINE_DATE` | week start | Date for the left "As of … (total)" column. Set e.g. `2026-07-01` to reproduce a month-start baseline. |
 | `REPORT_TIMEZONE` | `UTC` | Timezone for day boundaries (e.g. `Europe/Madrid`). |
@@ -181,11 +184,15 @@ severities and first-detected dates.
   resolved, whatever its timestamps say.
 - **As of \<date\>** = issues detected on/before that date and not yet
   closed/ignored by then.
-- With the default baseline (= week start), the numbers reconcile per row:
-  `baseline + added − resolved = current`. With a custom baseline (e.g. 7/1 while the
-  week starts 7/6), the identity no longer holds by construction — expected.
-- A new worksheet is created per week (newest tab first); re-running the same week
-  replaces that week's tab.
+- The **right-hand "As of" column is a snapshot at the end of the report window**
+  for completed weeks (e.g. a Monday run reporting last week shows the state as of
+  the window's end, not the run moment). This makes reports reproducible — re-running
+  an old week yields identical numbers — and, with the default baseline (= week
+  start), the identity `baseline + added − resolved = as-of` holds exactly. For a
+  week still in progress, the snapshot is simply "now". With a custom baseline
+  (e.g. 7/1 while the week starts 7/6) the identity no longer holds by construction.
+- One spreadsheet file is created per week; re-running the same week rewrites that
+  week's file in place.
 
 ## Notes & limitations
 

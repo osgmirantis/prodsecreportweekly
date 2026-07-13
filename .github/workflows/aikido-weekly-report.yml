@@ -2,7 +2,7 @@ name: Aikido weekly security report
 
 on:
   schedule:
-    - cron: "0 23 * * 0"
+    - cron: "0 7 * * 1"
   workflow_dispatch:
     inputs:
       week_start:
@@ -65,6 +65,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           DEBUG_CSV_DIR: ${{ inputs.debug_csv == true && 'debug_csv' || '' }}
           REPORT_TIMEZONE: "Europe/Madrid"
+          REPORT_WEEK: "previous"   # default is "previous"
           REPORT_WEEK_DAYS: "7"
           # TEAM_PREFIX: "Product:"
           EXCLUDE_IGNORED_BY: "auto,rule"

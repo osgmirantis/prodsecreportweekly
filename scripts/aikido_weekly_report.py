@@ -10,7 +10,8 @@ For every Aikido workspace configured (Mirantis, MOSK, ...), the script:
        - open issues as of the baseline date        -> "As of <baseline> (total)"
        - issues added during the report week        -> Critical / Other
        - issues resolved during the report week     -> Critical / Other
-       - open issues right now                      -> "As of <today>"
+       - open issues at the window end (or now,
+         while the week is still in progress)      -> the right "As of" column
   5. Writes one worksheet per report week into a Google Spreadsheet,
      matching the agreed dashboard layout (merged yellow header, Total row).
 
@@ -50,7 +51,12 @@ TEAM_PREFIX                  Default team-name filter. Default: "Product:".
                              AIKIDO_WORKSPACES ("" = report all active teams).
 AIKIDO_ISSUE_TYPE            Limit to one Aikido issue type, e.g. "sast".
                              Default: empty = all issue types.
-REPORT_WEEK_START            YYYY-MM-DD (a Monday). Default: Monday of the current week.
+REPORT_WEEK                  "previous" (default) or "current". Which week to
+                             analyze relative to the run date — "previous" fits
+                             a Monday-morning schedule reporting on the week
+                             that just ended.
+REPORT_WEEK_START            YYYY-MM-DD (a Monday). Overrides REPORT_WEEK with
+                             an explicit week.
 REPORT_WEEK_DAYS             Length of the report window in days. Default: 5 (Mon-Fri).
 REPORT_BASELINE_DATE         YYYY-MM-DD for the left "As of" column.
                              Default: the report week start (so totals reconcile:
@@ -399,14 +405,14 @@ def us_date(d: dt.date) -> str:
 
 def build_table(per_product: dict[str, dict], baseline_date: dt.date,
                 week_start: dt.date, week_last_day: dt.date,
-                today: dt.date) -> list[list]:
+                asof_date: dt.date) -> list[list]:
     week_label = f"{week_start:%m/%d} {week_last_day:%m/%d} {week_start.year}"
     header_row_1 = [
         "Product",
         f"As of {us_date(baseline_date)} (total)",
         f"Week {week_label} added", "",
         f"Week {week_label} resolved", "",
-        f"As of {us_date(today)}",
+        f"As of {us_date(asof_date)}",
     ]
     header_row_2 = ["", "", "Critical", "Other", "Critical", "Other", ""]
 
@@ -751,29 +757,51 @@ def select_product_teams(teams: list[dict], prefix: str) -> list[tuple[str, int]
     return selected
 
 
+def resolve_week_start(today: dt.date) -> dt.date:
+    """Monday of the report week.
+
+    REPORT_WEEK_START (YYYY-MM-DD) wins when set; otherwise REPORT_WEEK picks
+    the week relative to today: "previous" (default — the completed week
+    before this one, for Monday-morning reporting) or "current".
+    """
+    explicit = env_str("REPORT_WEEK_START")
+    if explicit:
+        return dt.date.fromisoformat(explicit)
+    monday_this_week = today - dt.timedelta(days=today.weekday())
+    which = env_str("REPORT_WEEK", "previous").lower()
+    if which == "previous":
+        return monday_this_week - dt.timedelta(days=7)
+    if which == "current":
+        return monday_this_week
+    raise SystemExit(f"REPORT_WEEK must be 'previous' or 'current' (got {which!r}).")
+
+
 def main() -> int:
     tz_name = env_str("REPORT_TIMEZONE", "UTC")
     tz = ZoneInfo(tz_name)
     now = dt.datetime.now(tz)
     today = now.date()
 
-    week_start_raw = env_str("REPORT_WEEK_START")
-    if week_start_raw:
-        week_start = dt.date.fromisoformat(week_start_raw)
-    else:
-        week_start = today - dt.timedelta(days=today.weekday())  # Monday of current week
-
+    week_start = resolve_week_start(today)
     week_days = int(env_str("REPORT_WEEK_DAYS", "5"))
     week_last_day = week_start + dt.timedelta(days=week_days - 1)
+    week_end_dt = dt.datetime.combine(week_start + dt.timedelta(days=week_days),
+                                      dt.time.min, tz)
 
     baseline_raw = env_str("REPORT_BASELINE_DATE")
     baseline_date = dt.date.fromisoformat(baseline_raw) if baseline_raw else week_start
 
     week_start_ts = int(dt.datetime.combine(week_start, dt.time.min, tz).timestamp())
-    week_end_ts = int(dt.datetime.combine(week_start + dt.timedelta(days=week_days),
-                                          dt.time.min, tz).timestamp())
+    week_end_ts = int(week_end_dt.timestamp())
     baseline_ts = int(dt.datetime.combine(baseline_date, dt.time.min, tz).timestamp())
-    now_ts = int(now.timestamp())
+
+    # Right-hand "As of" column: a snapshot at the END of the report window for
+    # completed weeks (so re-runs reproduce identical reports and, with the
+    # default baseline, baseline + added - resolved == as-of holds exactly),
+    # or "now" while the week is still in progress.
+    asof_dt = min(now, week_end_dt)
+    asof_ts = int(asof_dt.timestamp())
+    asof_date = asof_dt.date()
 
     team_prefix = env_str("TEAM_PREFIX", "Product:")
     issue_type = env_str("AIKIDO_ISSUE_TYPE") or None
@@ -784,7 +812,8 @@ def main() -> int:
     dry_run = env_bool("DRY_RUN", False)
 
     log(f"Report week: {week_start} .. {week_last_day} ({week_days} days, tz={tz_name})")
-    log(f"Baseline date: {baseline_date} | Current: {now:%Y-%m-%d %H:%M}")
+    log(f"Baseline: {baseline_date} | As-of snapshot: {asof_dt:%Y-%m-%d %H:%M} | "
+        f"Run: {now:%Y-%m-%d %H:%M}")
     log(f"Default team prefix: {team_prefix!r} | Issue type: {issue_type or 'all'} | "
         f"ignored counts as resolved: {treat_ignored_as_resolved} | "
         f"exclude ignored_by: {', '.join(sorted(exclude_ignored_by)) or 'none'}")
@@ -829,7 +858,7 @@ def main() -> int:
                         f"(ignored_by in {sorted(exclude_ignored_by)})")
                 issues = kept
             tally_issues(issues, per_product[product], baseline_ts,
-                         week_start_ts, week_end_ts, now_ts,
+                         week_start_ts, week_end_ts, asof_ts,
                          treat_ignored_as_resolved)
             groups = {i.get("group_id") for i in issues if i.get("group_id") is not None}
             log(f"[{workspace['name']}]   {product}: {len(issues)} individual issues "
@@ -837,7 +866,7 @@ def main() -> int:
             if debug_csv_dir:
                 csv_path = write_debug_csv(
                     debug_csv_dir, workspace["name"], product, issues,
-                    baseline_ts, week_start_ts, week_end_ts, now_ts,
+                    baseline_ts, week_start_ts, week_end_ts, asof_ts,
                     treat_ignored_as_resolved, tz, week_start,
                 )
                 log(f"[{workspace['name']}]   {product}: audit CSV -> {csv_path}")
@@ -846,7 +875,7 @@ def main() -> int:
         log("ERROR: no reportable teams found in any workspace; nothing to report.")
         return 1
 
-    values = build_table(per_product, baseline_date, week_start, week_last_day, today)
+    values = build_table(per_product, baseline_date, week_start, week_last_day, asof_date)
     log("")
     print_table(values)
 
