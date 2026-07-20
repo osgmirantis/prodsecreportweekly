@@ -101,6 +101,7 @@ import datetime as dt
 import json
 import os
 import sys
+import uuid
 import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
@@ -502,19 +503,30 @@ def render_report_worksheet(spreadsheet, worksheet_title: str, values: list[list
     import gspread
 
     # Recreate the worksheet so stale merges/formatting never linger.
+    # Order matters: Sheets requires at least one sheet per file, and weekly
+    # files hold exactly one — so rename the old sheet out of the way, add the
+    # fresh one, and only then delete the old (delete-first 400s on re-runs).
+    stale_prefix = f"{worksheet_title} ~rebuild-"
     try:
         old = spreadsheet.worksheet(worksheet_title)
-        spreadsheet.del_worksheet(old)
+        old.update_title(f"{stale_prefix}{int(time.time())}")
     except gspread.WorksheetNotFound:
-        pass
+        old = None
     worksheet = spreadsheet.add_worksheet(
         title=worksheet_title, rows=max(50, len(values) + 10), cols=10, index=0
     )
+    if old is not None:
+        spreadsheet.del_worksheet(old)
     if drop_other_worksheets:
         # Weekly files hold exactly one sheet: remove the default "Sheet1"
         # and anything left over from previous runs.
         for other in spreadsheet.worksheets():
             if other.id != worksheet.id:
+                spreadsheet.del_worksheet(other)
+    else:
+        # Legacy multi-tab mode: sweep temp sheets left by a crashed rebuild.
+        for other in spreadsheet.worksheets():
+            if other.id != worksheet.id and other.title.startswith(stale_prefix):
                 spreadsheet.del_worksheet(other)
 
     worksheet.update(values=values, range_name="A1")
@@ -560,7 +572,6 @@ def render_report_worksheet(spreadsheet, worksheet_title: str, values: list[list
         "textFormat": {"italic": True, "fontSize": 9,
                        "foregroundColor": {"red": 0.5, "green": 0.5, "blue": 0.5}},
     })
-
 
 def google_credentials():
     """Service-account credentials shared by the Sheets writer, the Drive
